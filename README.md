@@ -1,4 +1,5 @@
 # Fine-tuning - IFRE
+Inplementation of "Relative Fine-tuning in Incremental Few-Shot Relation Extraction"
 
 ### Environments
 - ``python 3``
@@ -61,5 +62,21 @@ Some explanations of the parameters in the script:
 ### Results
 
 **BERT on FewRel 1.0**
+1-shot
 
+|                   | Novel | Base | All |
+|  ---------------  | -----------  | ------------- | ------------ |
+| InreProtoNetwork   | 60.15 | 82.10 | 71.13 |
+| ICA-Proto | 63.25 | 82.56 | 72.91 |
+| Ours | 80.40 | 78.31 | 79.36 |
 
+5-shot
+
+|                      | Novel | Base | All |
+|  ---------------  | -----------  | ------------- | ------------ |
+| InreProtoNetwork   | 65.77 | 84.64 | 75.21 |
+| ICA-Proto | 69.49 | 84.89 | 77.19 |
+| Ours | 83.39 | 82.67 | 83.03 |
+
+Acknowledgment
+Our code is based on the implementations of SimpleFSRE(https://github.com/lylylylylyly/SimpleFSRE)
