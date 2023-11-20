@@ -1,8 +1,4 @@
-# SimpleFSRE
-The code of the short paper *"A Simple yet Effective Relation Information Guided Approach for Few-Shot Relation Extraction"*. This paper has been accepted to Findings of ACL2022.
-You can find the main results (**username is liuyang00**) in the paper on FewRel 1.0 competition on CodaLab competition websit: [FewRel 1.0 Competition](https://competitions.codalab.org/competitions/27980#results)
-
-We will release the paper link after camera ready.
+# Fine-tuning - IFRE
 
 ### Environments
 - ``python 3``
@@ -66,14 +62,4 @@ Some explanations of the parameters in the script:
 
 **BERT on FewRel 1.0**
 
-|                   | 5-way-1-shot | 5-way-5-shot | 10-way-1-shot | 10-way-5-shot |
-|  ---------------  | -----------  | ------------- | ------------ | ------------- |
-| Val               | 91.29 | 94.05 | 86.09 | 89.68 |
-| Test              | 94.42 | 96.37 | 90.73 | 93.47 |
 
-**CP on FewRel 1.0**
-
-|                   | 5-way-1-shot | 5-way-5-shot | 10-way-1-shot | 10-way-5-shot |
-|  ---------------  | -----------  | ------------- | ------------ | ------------- |
-| Val               | 96.21 | 97.07 | 93.38 | 95.11 |
-| Test              | 96.63 | 97.93 | 94.94 | 96.39 |
