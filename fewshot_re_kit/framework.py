@@ -62,7 +62,7 @@ class FewShotREModel(nn.Module):
 
 class FewShotREFramework:
 
-    def __init__(self, train_data_loader, val_data_loader, test_data_loader, adv_data_loader=None, adv=False, d=None):
+    def __init__(self, train_data_loader, val_data_loader, test_data_loader, base_val_data_loader, adv_data_loader=None, adv=False, d=None):
         '''
         train_data_loader: DataLoader for training.
         val_data_loader: DataLoader for validating.
@@ -72,6 +72,8 @@ class FewShotREFramework:
         self.val_data_loader = val_data_loader
         self.test_data_loader = test_data_loader
         self.adv_data_loader = adv_data_loader
+        self.base_val_data_loader = base_val_data_loader
+
         self.adv = adv
         if adv:
             self.adv_cost = nn.CrossEntropyLoss()
@@ -147,11 +149,14 @@ class FewShotREFramework:
             print('Use bert optim!')
             parameters_to_optimize = list(model.named_parameters())
             no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
+            cls = ['classifier.base_linear.weight', 'classifeir.novel_linear.weight']
             parameters_to_optimize = [
                 {'params': [p for n, p in parameters_to_optimize 
-                    if not any(nd in n for nd in no_decay)], 'weight_decay': 0.01},
+                    if not any(nd in n for nd in no_decay + cls)], 'weight_decay': 0.01, 'lr': learning_rate},
                 {'params': [p for n, p in parameters_to_optimize
-                    if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
+                    if any(nd in n for nd in no_decay)], 'weight_decay': 0.0, 'lr': learning_rate},
+                {'params': [p for n, p in parameters_to_optimize
+                    if any(nd in n for nd in no_decay)], 'weight_decay': 5e-4, 'lr': 1e-4},                    
             ]
             if use_sgd_for_bert:
                 optimizer = torch.optim.SGD(parameters_to_optimize, lr=learning_rate)
@@ -208,7 +213,7 @@ class FewShotREFramework:
                 logits, pred = model(batch, N_for_train, K, 
                         Q * N_for_train + na_rate * Q)
             else:
-                support, query, label, rel_text = next(self.train_data_loader)
+                support, query, label, rel_text, supprot_label = next(self.train_data_loader)
                 if torch.cuda.is_available():
                     for k in support:
                         support[k] = support[k].cuda()
@@ -224,10 +229,10 @@ class FewShotREFramework:
                 #import pdb
                 #pdb.set_trace()
                 
-                logits, pred = model(support, query, rel_text, 
-                        N_for_train, K, Q * N_for_train + na_rate * Q)
-            loss = model.loss(logits, label) / float(grad_iter)
-            right = model.accuracy(pred, label)
+                loss = model.base_train_forawd(support,rel_text, 
+                        N_for_train, K, supprot_label) 
+            #loss = model.loss(logits, label) / float(grad_iter)
+            #right = model.accuracy(pred, label)
             if fp16:
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
                     scaled_loss.backward()
@@ -273,10 +278,11 @@ class FewShotREFramework:
 
                 iter_loss_dis += self.item(loss_dis.data)
                 iter_right_dis += right_dis
-
+            """
             iter_loss += self.item(loss.data)
             iter_right += self.item(right.data)
             iter_sample += 1
+            
             if self.adv:
                 sys.stdout.write('step: {0:4} | loss: {1:2.6f}, accuracy: {2:3.2f}%, dis_loss: {3:2.6f}, dis_acc: {4:2.6f}'
                     .format(it + 1, iter_loss / iter_sample, 
@@ -286,9 +292,9 @@ class FewShotREFramework:
             else:
                 sys.stdout.write('step: {0:4} | loss: {1:2.6f}, accuracy: {2:3.2f}%'.format(it + 1, iter_loss / iter_sample, 100 * iter_right / iter_sample) + '\r')
             sys.stdout.flush()
-
+            """
             if (it + 1) % val_step == 0:
-                acc = self.eval(model, B, N_for_eval, K, Q, val_iter, 
+                acc = self.base_val_eval(model, B, N_for_eval, K, Q, val_iter, 
                         na_rate=na_rate, pair=pair)
                 model.train()
                 if acc > best_acc:
@@ -300,7 +306,7 @@ class FewShotREFramework:
                 iter_right = 0.
                 iter_right_dis = 0.
                 iter_sample = 0.
-                
+        torch.save({'state_dict': model.state_dict()}, save_ckpt + '_last_epoch')
         print("\n####################\n")
         print("Finish training " + model_name)
 
@@ -323,7 +329,7 @@ class FewShotREFramework:
         '''
         print("")
         
-        model.eval()
+        #model.eval()
         if ckpt is None:
             print("Use val dataset")
             eval_dataset = self.val_data_loader
@@ -347,43 +353,43 @@ class FewShotREFramework:
         
         iter_right = 0.0
         iter_sample = 0.0
-        with torch.no_grad():
-            for it in range(eval_iter):
-                if pair:
-                    batch, label = next(eval_dataset)
-                    if torch.cuda.is_available():
-                        for k in batch:
-                            batch[k] = batch[k].cuda() #batch[k].shape [400, 128]
-                            #import pdb
-                            #pdb.set_trace()
-                        label = label.cuda() #label.shape [80]
-                    logits, pred = model(batch, N, K, Q * N + Q * na_rate)
-                    #pred.shape [80]
-                    
-                else:
-                    support, query, label, rel_text = next(eval_dataset)
-                    if torch.cuda.is_available():
-                        for k in support:
-                            support[k] = support[k].cuda()
-                        for k in query:
-                            query[k] = query[k].cuda()
-                        
-                        for k in rel_text:
-                            rel_text[k] = rel_text[k].cuda()    
-                        
-                        label = label.cuda()
-                    logits, pred = model(support, query, rel_text, N, K, Q * N + Q * na_rate)
-                
-                
-                
-                
-                right = model.accuracy(pred, label)
-                iter_right += self.item(right.data)
-                iter_sample += 1
 
-                sys.stdout.write('[EVAL] step: {0:4} | accuracy: {1:3.2f}%'.format(it + 1, 100 * iter_right / iter_sample) + '\r')
-                sys.stdout.flush()
-            print("")
+        for it in range(eval_iter):
+            if pair:
+                batch, label = next(eval_dataset)
+                if torch.cuda.is_available():
+                    for k in batch:
+                        batch[k] = batch[k].cuda() #batch[k].shape [400, 128]
+                        #import pdb
+                        #pdb.set_trace()
+                    label = label.cuda() #label.shape [80]
+                logits, pred = model(batch, N, K, Q * N + Q * na_rate)
+                #pred.shape [80]
+                
+            else:
+                support, query, label, rel_text = next(eval_dataset)
+                if torch.cuda.is_available():
+                    for k in support:
+                        support[k] = support[k].cuda()
+                    for k in query:
+                        query[k] = query[k].cuda()
+                    
+                    for k in rel_text:
+                        rel_text[k] = rel_text[k].cuda()    
+                    
+                    label = label.cuda()
+                logits, pred = model(support, query, rel_text, N, K, Q * N + Q * na_rate)
+            
+            
+            
+            
+            right = model.accuracy(pred, label)
+            iter_right += self.item(right.data)
+            iter_sample += 1
+
+            sys.stdout.write('[EVAL] step: {0:4} | accuracy: {1:3.2f}%'.format(it + 1, 100 * iter_right / iter_sample) + '\r')
+            sys.stdout.flush()
+        print("")
         return iter_right / iter_sample
         
         
@@ -434,56 +440,104 @@ class FewShotREFramework:
             
             iter_right = 0.0
             iter_sample = 0.0
-            with torch.no_grad():
-                for it in tqdm(range(eval_iter)):
-                    if pair:
-                        batch = next(eval_dataset)
-                        if torch.cuda.is_available():
-                            for k in batch:
-                                batch[k] = batch[k].cuda() #batch[k].shape [400, 128]
-                                #import pdb
-                                #pdb.set_trace()
-                            #label = label.cuda() #label.shape [80]
-                        logits, pred = model(batch, N, K, Q * N + Q * na_rate)
-                        #pred.shape [80]
+            for it in tqdm(range(eval_iter)):
+                if pair:
+                    batch = next(eval_dataset)
+                    if torch.cuda.is_available():
+                        for k in batch:
+                            batch[k] = batch[k].cuda() #batch[k].shape [400, 128]
+                            #import pdb
+                            #pdb.set_trace()
+                        #label = label.cuda() #label.shape [80]
+                    logits, pred = model(batch, N, K, Q * N + Q * na_rate)
+                    #pred.shape [80]
+                    
+                else:
+                    support, query, rel_text = next(eval_dataset)
+                    if torch.cuda.is_available():
+                        for k in support:
+                            support[k] = support[k].cuda()
+                        for k in query:
+                            query[k] = query[k].cuda()
+                        #label = label.cuda()
                         
-                    else:
-                        support, query, rel_text = next(eval_dataset)
-                        if torch.cuda.is_available():
-                            for k in support:
-                                support[k] = support[k].cuda()
-                            for k in query:
-                                query[k] = query[k].cuda()
-                            #label = label.cuda()
-                            
-                            for k in rel_text:
-                                rel_text[k] = rel_text[k].cuda()
-                            
-                        logits, pred = model(support, query, rel_text, N, K, Q * N + Q * na_rate)
-                    
-                    list_pred = pred.cpu().numpy().tolist()
-                    temp_list_pred = []
-                    
-                    for nn in range(B):
-                        temp_list_pred.append(list_pred[N * nn])
-                    
-                    
-                    #right = model.accuracy(pred, label)
-                    #iter_right += self.item(right.data)
-                    #iter_sample += 1
-                    
-                    all_pred.extend(temp_list_pred)
-                    #import pdb
-                    #pdb.set_trace()
-                    
-                    #sys.stdout.write('[EVAL] step: {0:4} | accuracy: {1:3.2f}%'.format(it + 1, 100 * iter_right / iter_sample) + '\r')
-                    #sys.stdout.flush()
-                print("all pred len:", len(all_pred))
+                        for k in rel_text:
+                            rel_text[k] = rel_text[k].cuda()
+                        
+                    logits, pred = model(support, query, rel_text, N, K, Q * N + Q * na_rate)
                 
-                f = open(test_output, 'w')
-                json.dump(all_pred, f)
+                list_pred = pred.cpu().numpy().tolist()
+                temp_list_pred = []
                 
+                for nn in range(B):
+                    temp_list_pred.append(list_pred[N * nn])
+                
+                
+                #right = model.accuracy(pred, label)
+                #iter_right += self.item(right.data)
+                #iter_sample += 1
+                
+                all_pred.extend(temp_list_pred)
+                #import pdb
+                #pdb.set_trace()
+                
+                #sys.stdout.write('[EVAL] step: {0:4} | accuracy: {1:3.2f}%'.format(it + 1, 100 * iter_right / iter_sample) + '\r')
+                #sys.stdout.flush()
+            print("all pred len:", len(all_pred))
+            
+            f = open(test_output, 'w')
+            json.dump(all_pred, f)
+            
             #return iter_right / iter_sample
         
         
+    def base_val_eval(self,
+            model,
+            B, N, K, Q,
+            eval_iter,
+            own_classifier_dict=None): 
+        '''
+        model: a FewShotREModel instance
+        B: Batch size
+        N: Num of classes for each batch
+        K: Num of instances for each class in the support set
+        Q: Num of instances for each class in the query set
+        eval_iter: Num of iterations
+        ckpt: Checkpoint path. Set as None if using current model parameters.
+        return: Accuracy
+        '''
+        print("")
         
+        model.eval()
+        eval_dataset = self.val_data_loader
+        
+        iter_right = 0.0
+        iter_sample = 0.0
+
+        with torch.no_grad():
+            for it in range(eval_iter):                
+                support, query, label, rel_text, support_label = next(eval_dataset)
+                if torch.cuda.is_available():
+                    for k in support:
+                        support[k] = support[k].cuda()
+                    for k in query:
+                        query[k] = query[k].cuda()
+                    
+                    for k in rel_text:
+                        rel_text[k] = rel_text[k].cuda()    
+                    
+                    label = label.cuda()
+                    support_label = support_label.cuda()
+                pred = model.base_val_forward(support, rel_text, N, K, support_label)                
+                right = model.accuracy(pred, label)
+                iter_right += self.item(right.data)
+                iter_sample += 1
+
+                sys.stdout.write('[BASE EVAL] step: {0:4} | accuracy: {1:3.2f}%'.format(it + 1, 100 * iter_right / iter_sample) + '\r')
+                sys.stdout.flush()
+            print("")
+
+            if own_classifier_dict is not None:
+                model.classifier.load_state_dict(own_classifier_dict)
+
+        return iter_right / iter_sample        

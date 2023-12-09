@@ -667,3 +667,181 @@ def get_loader2(name, encoder, N, K, Q, batch_size,
             num_workers=num_workers,
             collate_fn=collate_fn)
     return iter(data_loader)
+
+
+class FewRelIncreDataset(data.Dataset):
+    """
+    FewRel Dataset
+    """
+    def __init__(self, name, encoder, N, K, Q, na_rate, root):
+        self.root = root
+        path = os.path.join(root, name + ".json") # json file path
+        
+        pid2name = 'pid2name'
+        pid2name_path = os.path.join(root, pid2name + ".json")
+        
+        if not os.path.exists(path):
+            print("[ERROR] Data file does not exist!")
+            assert(0)
+        self.json_data = json.load(open(path))
+        self.pid2name = json.load(open(pid2name_path))
+        self.classes = list(self.json_data.keys())
+        self.N = N
+        self.K = K
+        self.Q = Q
+        self.na_rate = na_rate
+        self.encoder = encoder
+
+        # base classes #0~54 
+        self.classes_dict = dict()
+        for idx, n in enumerate(self.json_data.keys()):
+            self.classes_dict[n] = idx
+
+        if 'base' in name:
+            self.base = True
+        else:
+            self.base = False
+            
+    def __getraw__(self, item):
+        word, pos1, pos2, mask, lens, pos1_end, pos2_end = self.encoder.tokenize(item['tokens'],
+            item['h'][2][0],
+            item['t'][2][0])
+        return word, pos1, pos2, mask, lens, pos1_end, pos2_end
+
+    def __additem__(self, d, word, pos1, pos2, mask, lens, pos1_end, pos2_end):
+        d['word'].append(word)
+        d['pos1'].append(pos1)
+        d['pos2'].append(pos2)
+        d['mask'].append(mask)
+        d['lens'].append(lens)
+        d['pos1_end'].append(pos1_end)
+        d['pos2_end'].append(pos2_end)
+        
+    
+    def __getrel__(self, item):
+        word, mask = self.encoder.tokenize_rel(item)
+        return word, mask
+
+    def __getname__(self, name):
+        word, mask = self.encoder.tokenize_name(name)
+        return word, mask
+    
+    
+    def __getitem__(self, index):
+        target_classes = random.sample(self.classes, self.N)
+        relation_set = {'word': [], 'mask': []}
+        support_set = {'word': [], 'pos1': [], 'pos2': [], 'mask': [], 'lens':[], 'pos1_end':[], 'pos2_end': [] }
+        query_set = {'word': [], 'pos1': [], 'pos2': [], 'mask': [], 'lens':[], 'pos1_end': [], 'pos2_end': [] }
+        query_label = []
+        support_label = []
+        Q_na = int(self.na_rate * self.Q)
+        na_classes = list(filter(lambda x: x not in target_classes,  
+            self.classes))
+
+        for i, class_name in enumerate(target_classes):
+        
+            #TODO
+            rel_text, rel_text_mask = self.__getrel__(self.pid2name[class_name])
+            rel_text, rel_text_mask = torch.tensor(rel_text).long(), torch.tensor(rel_text_mask).long()
+            relation_set['word'].append(rel_text)
+            relation_set['mask'].append(rel_text_mask)
+        
+        
+            indices = np.random.choice(
+                    list(range(len(self.json_data[class_name]))), 
+                    self.K + self.Q, False)
+            count = 0
+            for j in indices:
+                word, pos1, pos2, mask, lens, pos1_end, pos2_end = self.__getraw__(
+                        self.json_data[class_name][j])
+                word = torch.tensor(word).long()
+                pos1 = torch.tensor(pos1).long()
+                pos2 = torch.tensor(pos2).long()
+                mask = torch.tensor(mask).long()
+                lens = torch.tensor(lens).long()
+                pos1_end = torch.tensor(pos1_end).long()
+                pos2_end = torch.tensor(pos2_end).long()
+                if count < self.K:
+                    self.__additem__(support_set, word, pos1, pos2, mask, lens, pos1_end, pos2_end)
+                else:
+                    self.__additem__(query_set, word, pos1, pos2, mask, lens, pos1_end, pos2_end)
+                count += 1
+
+            #query_label += [i] * self.Q
+            if self.base:
+                support_label += [self.classes_dict[class_name]] * self.K
+                query_label += [self.classes_dict[class_name]] * self.Q
+            else: # novel
+                support_label += [i] * self.K
+                query_label += [i] * self.Q
+        # NA
+        for j in range(Q_na):
+            cur_class = np.random.choice(na_classes, 1, False)[0]
+            index = np.random.choice(
+                    list(range(len(self.json_data[cur_class]))),
+                    1, False)[0]
+            word, pos1, pos2, mask, pos1_end, pos2_end = self.__getraw__(
+                    self.json_data[cur_class][index])
+            word = torch.tensor(word).long()
+            pos1 = torch.tensor(pos1).long()
+            pos2 = torch.tensor(pos2).long()
+            mask = torch.tensor(mask).long()
+            pos1_end = torch.tensor(pos1_end).long()
+            pos2_end = torch.tensor(pos2_end).long()
+            self.__additem__(query_set, word, pos1, pos2, mask, pos1_end, pos2_end)
+        # NA
+        
+        # query_label += [self.N] * Q_na
+
+
+        return support_set, query_set, query_label, relation_set, support_label  #separate support and query -- no pair
+    
+    def __len__(self):
+        return 1000000000
+
+def collate_fn(data):
+    batch_support = {'word': [], 'pos1': [], 'pos2': [], 'mask': [], 'lens': [], 'pos1_end':[], 'pos2_end': [] }
+    batch_query = {'word': [], 'pos1': [], 'pos2': [], 'mask': [], 'lens': [], 'pos1_end': [], 'pos2_end': [] }
+    batch_relation = {'word': [], 'mask': []}
+    batch_label = []
+    batch_support_label = []
+    support_sets, query_sets, query_labels, relation_sets, support_labels = zip(*data)
+    for i in range(len(support_sets)):
+        for k in support_sets[i]:
+            batch_support[k] += support_sets[i][k]
+        for k in query_sets[i]:
+            batch_query[k] += query_sets[i][k]
+        #TODO
+        for k in relation_sets[i]:
+            batch_relation[k] += relation_sets[i][k]
+        #TODO
+        batch_label += query_labels[i]
+        batch_support_label += support_labels[i]
+
+    for k in batch_support:
+        batch_support[k] = torch.stack(batch_support[k], 0)
+    for k in batch_query:
+        batch_query[k] = torch.stack(batch_query[k], 0)
+    #TODO
+    for k in batch_relation:
+        batch_relation[k] = torch.stack(batch_relation[k], 0)
+    #TODO
+    batch_label = torch.tensor(batch_label)
+    batch_support_label = torch.tensor(batch_support_label)
+
+    return batch_support, batch_query, batch_label, batch_relation, batch_support_label
+
+def get_incre_loader(name, encoder, N, K, Q, batch_size, 
+        num_workers=8, collate_fn=collate_fn, na_rate=0, root='./data'):
+    dataset = FewRelIncreDataset(name, encoder, N, K, Q, na_rate, root)
+    ##TODO
+    #import pdb
+    #pdb.set_trace()
+    
+    data_loader = data.DataLoader(dataset=dataset,
+            batch_size=batch_size,
+            shuffle=False,
+            pin_memory=True,
+            num_workers=num_workers,
+            collate_fn=collate_fn)
+    return iter(data_loader)

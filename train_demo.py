@@ -1,4 +1,4 @@
-from fewshot_re_kit.data_loader import get_loader, get_loader_pair, get_loader_unsupervised, get_loader_pair2, get_loader2
+from fewshot_re_kit.data_loader import get_loader, get_loader_pair, get_loader_unsupervised, get_loader_pair2, get_loader2, get_incre_loader
 from fewshot_re_kit.framework import FewShotREFramework
 from fewshot_re_kit.sentence_encoder import CNNSentenceEncoder, BERTSentenceEncoder, BERTPAIRSentenceEncoder, RobertaSentenceEncoder, RobertaPAIRSentenceEncoder, BERTRelationEncoder
 import models
@@ -10,6 +10,7 @@ from models.siamese import Siamese
 from models.pair import Pair
 from models.d import Discriminator
 from models.mtb import Mtb
+from models.classifier import Classifier
 import sys
 import torch
 from torch import optim, nn
@@ -34,12 +35,14 @@ def setup_seed(seed):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--train', default='train_wiki',
+    parser.add_argument('--train', default='base_train_fewrel',
             help='train file')
-    parser.add_argument('--val', default='val_wiki',
+    parser.add_argument('--val', default='novel_test_fewerl',
             help='val file')
     parser.add_argument('--test', default='5-1-test',
             help='test file')
+    parser.add_argument('--base_val', default='base_test_fewrel.json',
+            help='base val file')
     parser.add_argument('--adv', default=None,
             help='adv file')
     parser.add_argument('--trainN', default=10, type=int,
@@ -56,7 +59,7 @@ def main():
             help='num of iters in training')
     parser.add_argument('--val_iter', default=1000, type=int,
             help='num of iters in validation')
-    parser.add_argument('--test_iter', default=2500, type=int,
+    parser.add_argument('--test_iter', default=10000, type=int,
             help='num of iters in testing')
     parser.add_argument('--val_step', default=2000, type=int,
            help='val after training how many iters')
@@ -208,9 +211,11 @@ def main():
         test_data_loader = get_loader_pair2(opt.test, sentence_encoder,
                 N=N, K=K, Q=Q, na_rate=opt.na_rate, batch_size=batch_size, encoder_name=encoder_name)
     else:
-        train_data_loader = get_loader(opt.train, sentence_encoder,
+        train_data_loader = get_incre_loader(opt.train, sentence_encoder,
                 N=trainN, K=K, Q=Q, na_rate=opt.na_rate, batch_size=batch_size)
-        val_data_loader = get_loader(opt.val, sentence_encoder,
+        val_data_loader = get_incre_loader(opt.val, sentence_encoder,
+                N=N, K=K, Q=Q, na_rate=opt.na_rate, batch_size=batch_size)
+        base_val_data_loader = get_incre_loader(opt.base_val, sentence_encoder,
                 N=N, K=K, Q=Q, na_rate=opt.na_rate, batch_size=batch_size)
         test_data_loader = get_loader2(opt.test, sentence_encoder,
                 N=N, K=K, Q=Q, na_rate=opt.na_rate, batch_size=batch_size)
@@ -234,7 +239,7 @@ def main():
         d = Discriminator(opt.hidden_size)
         framework = FewShotREFramework(train_data_loader, val_data_loader, test_data_loader, adv_data_loader, adv=opt.adv, d=d)
     else:
-        framework = FewShotREFramework(train_data_loader, val_data_loader, test_data_loader)
+        framework = FewShotREFramework(train_data_loader, val_data_loader, test_data_loader, base_val_data_loader)
         
     prefix = '-'.join([model_name, encoder_name, opt.train, opt.val, str(N), str(K)])
     if opt.adv is not None:
@@ -248,7 +253,9 @@ def main():
     if len(opt.ckpt_name) > 0:
         prefix += '-' + opt.ckpt_name
     
-    if model_name == 'proto':
+    if model_name == 'classifier':
+        model = Classifier(sentence_encoder, dot=opt.dot, relation_encoder=relation_encoder)
+    elif model_name == 'proto':
         model = Proto(sentence_encoder, dot=opt.dot, relation_encoder=relation_encoder)
     elif model_name == 'gnn':
         model = GNN(sentence_encoder, N, hidden_size=opt.hidden_size)
